@@ -1,5 +1,6 @@
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
+import logger from './Logger';
 
 // Dossier de sauvegarde des enregistrements
 export const RECORDINGS_DIR = FileSystem.documentDirectory + 'sleep_recordings/';
@@ -50,32 +51,49 @@ export class AudioMonitor {
   }
 
   async requestPermissions() {
-    const { status } = await Audio.requestPermissionsAsync();
-    if (status !== 'granted') throw new Error('Permission micro refusée');
+    try {
+      logger.recordPermissionRequested();
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        const error = new Error('Permission micro refusée');
+        logger.recordPermissionDenied(error);
+        throw error;
+      }
+      logger.recordPermissionGranted();
+    } catch (e) {
+      logger.error('PERMISSION_ERROR', 'Failed to request microphone permission', { error: e.message });
+      throw e;
+    }
   }
 
   async _createRecording() {
-    const recording = new Audio.Recording();
-    await recording.prepareToRecordAsync({
-      android: {
-        extension: '.m4a',
-        outputFormat: Audio.AndroidOutputFormat.MPEG_4,
-        audioEncoder: Audio.AndroidAudioEncoder.AAC,
-        sampleRate: 44100,
-        numberOfChannels: 1,
-        bitRate: 64000,
-      },
-      ios: {
-        extension: '.m4a',
-        audioQuality: Audio.IOSAudioQuality.MEDIUM,
-        sampleRate: 44100,
-        numberOfChannels: 1,
-        bitRate: 64000,
-      },
-      isMeteringEnabled: true,
-    });
-    await recording.startAsync();
-    return recording;
+    try {
+      const recording = new Audio.Recording();
+      await recording.prepareToRecordAsync({
+        android: {
+          extension: '.m4a',
+          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+          audioEncoder: Audio.AndroidAudioEncoder.AAC,
+          sampleRate: 44100,
+          numberOfChannels: 1,
+          bitRate: 64000,
+        },
+        ios: {
+          extension: '.m4a',
+          audioQuality: Audio.IOSAudioQuality.MEDIUM,
+          sampleRate: 44100,
+          numberOfChannels: 1,
+          bitRate: 64000,
+        },
+        isMeteringEnabled: true,
+      });
+      await recording.startAsync();
+      logger.recordRecordingStarted(this.state);
+      return recording;
+    } catch (e) {
+      logger.error('RECORDING_ERROR', 'Failed to create recording', { error: e.message });
+      throw e;
+    }
   }
 
   async _stopAndGetUri(recording) {
@@ -96,17 +114,24 @@ export class AudioMonitor {
   }
 
   async start() {
-    await this.ensureDir();
-    await this.requestPermissions();
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: true,
-      playsInSilentModeIOS: true,
-      staysActiveInBackground: true,
-    });
-    this.isRunning = true;
-    this.state = 'monitoring';
-    this.onDebug?.('Mode ÉCOUTE — en attente de son…');
-    await this._startRecording();
+    try {
+      await this.ensureDir();
+      await this.requestPermissions();
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: true,
+      });
+      this.isRunning = true;
+      this.state = 'monitoring';
+      logger.recordMonitorStart(this.threshold);
+      this.onDebug?.('Mode ÉCOUTE — en attente de son…');
+      await this._startRecording();
+    } catch (e) {
+      logger.error('START_ERROR', 'Failed to start monitor', { error: e.message });
+      this.isRunning = false;
+      throw e;
+    }
   }
 
   async _startRecording() {
@@ -138,6 +163,7 @@ export class AudioMonitor {
           // En écoute : on attend que le seuil soit franchi
           if (level >= this.threshold) {
             // Son détecté ! On jette le recording d'écoute et on en démarre un de capture
+            logger.recordSoundDetected(level, this.threshold);
             this.onDebug?.(`Son détecté (${level.toFixed(0)}dB) → CAPTURE`);
             await this._switchToCapture();
             return;
@@ -153,6 +179,8 @@ export class AudioMonitor {
           }
           // Silence depuis 3s → sauvegarder
           if (now - this.lastSoundTime > SILENCE_TIMEOUT_MS) {
+            const silenceDuration = now - this.lastSoundTime;
+            logger.recordSilenceDetected(silenceDuration);
             this.onDebug?.('Silence 3s → sauvegarde…');
             await this._saveCapture();
             return;
@@ -174,51 +202,63 @@ export class AudioMonitor {
   }
 
   async _switchToCapture() {
-    this._stopPolling();
+    try {
+      this._stopPolling();
 
-    // Jeter le recording d'écoute
-    const oldRec = this.recording;
-    this.recording = null;
-    const oldUri = await this._stopAndGetUri(oldRec);
-    await this._deleteUri(oldUri);
+      // Jeter le recording d'écoute
+      const oldRec = this.recording;
+      this.recording = null;
+      const oldUri = await this._stopAndGetUri(oldRec);
+      await this._deleteUri(oldUri);
 
-    // Démarrer un nouveau recording pour la capture
-    this.state = 'capturing';
-    this.captureStart = Date.now();
-    this.lastSoundTime = Date.now();
-    await this._startRecording();
+      // Démarrer un nouveau recording pour la capture
+      this.state = 'capturing';
+      this.captureStart = Date.now();
+      this.lastSoundTime = Date.now();
+      logger.recordCaptureStarted();
+      await this._startRecording();
+    } catch (e) {
+      logger.error('CAPTURE_SWITCH_ERROR', 'Failed to switch to capture mode', { error: e.message });
+    }
   }
 
   async _saveCapture() {
-    this._stopPolling();
+    try {
+      this._stopPolling();
 
-    const recording = this.recording;
-    const captureStart = this.captureStart;
-    this.recording = null;
+      const recording = this.recording;
+      const captureStart = this.captureStart;
+      this.recording = null;
 
-    const uri = await this._stopAndGetUri(recording);
-    const durationMs = Date.now() - captureStart;
+      const uri = await this._stopAndGetUri(recording);
+      const durationMs = Date.now() - captureStart;
 
-    if (uri) {
-      const timestamp = new Date(captureStart);
-      const filename = `sleep_${captureStart}.m4a`;
-      const dest = RECORDINGS_DIR + filename;
-      try {
-        await FileSystem.moveAsync({ from: uri, to: dest });
-        const durationSec = Math.round(durationMs / 1000);
-        this.onDebug?.(`SAUVEGARDÉ → ${filename} (${durationSec}s)`);
-        this.onEvent?.({
-          timestamp,
-          uri: dest,
-          filename,
-          durationMs,
-        });
-      } catch (e) {
-        this.onDebug?.(`ERREUR SAVE: ${e.message}`);
-        console.error('Erreur sauvegarde clip:', e);
+      if (uri) {
+        const timestamp = new Date(captureStart);
+        const filename = `sleep_${captureStart}.m4a`;
+        const dest = RECORDINGS_DIR + filename;
+        try {
+          await FileSystem.moveAsync({ from: uri, to: dest });
+          const durationSec = Math.round(durationMs / 1000);
+          logger.recordCaptureSaved(filename, durationMs);
+          this.onDebug?.(`SAUVEGARDÉ → ${filename} (${durationSec}s)`);
+          this.onEvent?.({
+            timestamp,
+            uri: dest,
+            filename,
+            durationMs,
+          });
+        } catch (e) {
+          logger.recordCaptureFailed(filename, e);
+          this.onDebug?.(`ERREUR SAVE: ${e.message}`);
+          console.error('Erreur sauvegarde clip:', e);
+        }
+      } else {
+        logger.error('SAVE_ERROR', 'No URI available for capture', { filename: `sleep_${captureStart}.m4a` });
+        this.onDebug?.('PAS DE URI — enregistrement échoué');
       }
-    } else {
-      this.onDebug?.('PAS DE URI — enregistrement échoué');
+    } catch (e) {
+      logger.error('SAVE_ERROR', 'Failed to save capture', { error: e.message });
     }
 
     // Retour en mode écoute
@@ -237,39 +277,46 @@ export class AudioMonitor {
   }
 
   async stop() {
-    this.isRunning = false;
-    this._stopPolling();
-    this.onLevelUpdate?.(-160);
+    try {
+      logger.recordMonitorStop();
+      this.isRunning = false;
+      this._stopPolling();
+      this.onLevelUpdate?.(-160);
 
-    if (this.recording) {
-      const recording = this.recording;
-      const wasCapturing = this.state === 'capturing';
-      const captureStart = this.captureStart;
-      this.recording = null;
+      if (this.recording) {
+        const recording = this.recording;
+        const wasCapturing = this.state === 'capturing';
+        const captureStart = this.captureStart;
+        this.recording = null;
 
-      const uri = await this._stopAndGetUri(recording);
+        const uri = await this._stopAndGetUri(recording);
 
-      if (wasCapturing && uri) {
-        // Sauvegarder la capture en cours
-        const durationMs = Date.now() - captureStart;
-        const timestamp = new Date(captureStart);
-        const filename = `sleep_${captureStart}.m4a`;
-        const dest = RECORDINGS_DIR + filename;
-        try {
-          await FileSystem.moveAsync({ from: uri, to: dest });
-          this.onDebug?.(`SAUVEGARDÉ (stop) → ${filename}`);
-          this.onEvent?.({
-            timestamp,
-            uri: dest,
-            filename,
-            durationMs,
-          });
-        } catch (e) {
-          console.error('Erreur sauvegarde clip (stop):', e);
+        if (wasCapturing && uri) {
+          // Sauvegarder la capture en cours
+          const durationMs = Date.now() - captureStart;
+          const timestamp = new Date(captureStart);
+          const filename = `sleep_${captureStart}.m4a`;
+          const dest = RECORDINGS_DIR + filename;
+          try {
+            await FileSystem.moveAsync({ from: uri, to: dest });
+            logger.recordCaptureSaved(filename, durationMs);
+            this.onDebug?.(`SAUVEGARDÉ (stop) → ${filename}`);
+            this.onEvent?.({
+              timestamp,
+              uri: dest,
+              filename,
+              durationMs,
+            });
+          } catch (e) {
+            logger.recordCaptureFailed(filename, e);
+            console.error('Erreur sauvegarde clip (stop):', e);
+          }
+        } else {
+          await this._deleteUri(uri);
         }
-      } else {
-        await this._deleteUri(uri);
       }
+    } catch (e) {
+      logger.error('STOP_ERROR', 'Failed to stop monitor', { error: e.message });
     }
   }
 }

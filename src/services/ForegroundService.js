@@ -9,6 +9,7 @@
  */
 
 import ForegroundService from '@supersami/rn-foreground-service';
+import logger from './Logger';
 
 const TASK_ID = 'sleeptalker-monitor';
 const CHANNEL_ID = 'sleeptalker-channel';
@@ -19,6 +20,7 @@ let _started = false;
 export async function startForegroundService() {
   if (_started) return;
   try {
+    logger.recordForegroundServiceStart();
     await ForegroundService.startService({
       taskName: TASK_ID,
       channelId: CHANNEL_ID,
@@ -33,6 +35,7 @@ export async function startForegroundService() {
     });
     _started = true;
   } catch (e) {
+    logger.recordForegroundServiceError(e);
     console.warn('ForegroundService start error:', e);
   }
 }
@@ -40,6 +43,7 @@ export async function startForegroundService() {
 export async function updateForegroundNotification(eventCount) {
   if (!_started) return;
   try {
+    logger.info('Foreground notification updated', { eventCount });
     await ForegroundService.updateService({
       taskName: TASK_ID,
       channelId: CHANNEL_ID,
@@ -52,15 +56,18 @@ export async function updateForegroundNotification(eventCount) {
     });
   } catch (e) {
     // Non bloquant
+    logger.warn('Failed to update foreground notification', { error: e.message });
   }
 }
 
 export async function stopForegroundService() {
   if (!_started) return;
   try {
+    logger.recordForegroundServiceStop();
     await ForegroundService.stopService(TASK_ID);
     _started = false;
   } catch (e) {
+    logger.warn('ForegroundService stop error', { error: e.message });
     console.warn('ForegroundService stop error:', e);
   }
 }

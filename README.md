@@ -39,6 +39,17 @@ npx expo run:android
 npx eas build -p android --profile preview
 ```
 
+## 📋 Système de Logs
+
+Un système de logging complet aide à diagnostiquer les problèmes d'enregistrement :
+
+- ✅ Trace chaque événement (démarrage, détection, sauvegarde, erreurs)
+- 📊 Affichage en temps réel dans MonitorScreen
+- 💾 Persévérance automatique (1000 derniers logs)
+- 📈 Statistiques et export JSON/texte
+
+**Voir [LOGS_GUIDE.md](LOGS_GUIDE.md) pour les détails complets.**
+
 ---
 
 ## Réglages recommandés
@@ -55,14 +66,15 @@ Place le téléphone sur la table de nuit, **micro vers le haut**, **branché au
 
 ```
 index.js                        ← entry point bare workflow
-App.js                          ← Navigation tabs
+App.js                          ← Navigation tabs + init logger
 src/
   screens/
-    MonitorScreen.js            ← UI + intégration ForegroundService
+    MonitorScreen.js            ← UI + intégration ForegroundService + Logs display
     RecordingsScreen.js         ← Liste clips + lecture
   services/
-    AudioMonitor.js             ← Enregistrement + détection dBFS
-    ForegroundService.js        ← Notification persistante Android
+    AudioMonitor.js             ← Enregistrement + détection dBFS + logging
+    ForegroundService.js        ← Notification persistante Android + logging
+    Logger.js                   ← 🆕 Système de logs centralisé
 ```
 
 ## Permissions Android

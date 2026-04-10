@@ -18,6 +18,7 @@ import {
   stopForegroundService,
   updateForegroundNotification,
 } from '../services/ForegroundService';
+import logger from '../services/Logger';
 
 // ─── Palette nuit ─────────────────────────────────────────────────────────────
 const C = {
@@ -42,8 +43,8 @@ export default function MonitorScreen({ onNewEvent, maxRecordings, onMaxRecordin
   const [currentLevel, setCurrentLevel] = useState(-160);
   const [eventCount, setEventCount] = useState(0);
   const [elapsed, setElapsed] = useState(0);
-
-  const [debugLog, setDebugLog] = useState([]);
+  const [showLogs, setShowLogs] = useState(false);
+  const [recentLogs, setRecentLogs] = useState([]);
 
   const monitorRef = useRef(null);
   const elapsedRef = useRef(null);
@@ -51,6 +52,33 @@ export default function MonitorScreen({ onNewEvent, maxRecordings, onMaxRecordin
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
   const levelAnim = useRef(new Animated.Value(0)).current;
+  const logUnsubscribeRef = useRef(null);
+
+  // Initialiser le logger une seule fois
+  useEffect(() => {
+    const init = async () => {
+      if (!logger.initialized) {
+        await logger.init();
+      }
+      
+      // S'abonner aux nouveaux logs
+      if (logUnsubscribeRef.current) {
+        logUnsubscribeRef.current();
+      }
+      
+      logUnsubscribeRef.current = logger.subscribe((logEntry) => {
+        setRecentLogs(prev => [...prev.slice(-9), logEntry]);
+      });
+    };
+    
+    init();
+    
+    return () => {
+      if (logUnsubscribeRef.current) {
+        logUnsubscribeRef.current();
+      }
+    };
+  }, []);
 
   // Barre de niveau : 0→1 mappé de -80dBFS à 0dBFS
   const normalizedLevel = Math.max(0, Math.min(1, (currentLevel + 80) / 80));
@@ -92,8 +120,15 @@ export default function MonitorScreen({ onNewEvent, maxRecordings, onMaxRecordin
     }
   }, [threshold, triggerGlow]);
 
+  const handleThresholdChange = useCallback((newThreshold) => {
+    if (newThreshold !== threshold) {
+      logger.recordThresholdChanged(threshold, newThreshold);
+      setThreshold(newThreshold);
+    }
+  }, [threshold]);
+
   const handleDebug = useCallback((msg) => {
-    setDebugLog(prev => [...prev.slice(-4), msg]);
+    logger.debug(msg);
   }, []);
 
   const handleEvent = useCallback((event) => {
@@ -106,35 +141,44 @@ export default function MonitorScreen({ onNewEvent, maxRecordings, onMaxRecordin
   }, [onNewEvent]);
 
   const startMonitoring = async () => {
-    await startForegroundService();
-    setDebugLog([]);
-    const monitor = new AudioMonitor({
-      threshold,
-      onEvent: handleEvent,
-      onLevelUpdate: handleLevelUpdate,
-      onDebug: handleDebug,
-    });
-    monitorRef.current = monitor;
-    await monitor.start();
-    setIsRunning(true);
-    setEventCount(0);
-    startTimeRef.current = Date.now();
-    await activateKeepAwakeAsync();
+    try {
+      await startForegroundService();
+      setRecentLogs([]);
+      const monitor = new AudioMonitor({
+        threshold,
+        onEvent: handleEvent,
+        onLevelUpdate: handleLevelUpdate,
+        onDebug: handleDebug,
+      });
+      monitorRef.current = monitor;
+      await monitor.start();
+      setIsRunning(true);
+      setEventCount(0);
+      startTimeRef.current = Date.now();
+      await activateKeepAwakeAsync();
 
-    elapsedRef.current = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
-    }, 1000);
+      elapsedRef.current = setInterval(() => {
+        setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
+      }, 1000);
+    } catch (e) {
+      logger.error('MONITOR_START_ERROR', 'Failed to start monitoring', { error: e.message });
+      Alert.alert('Erreur', e.message || String(e));
+    }
   };
 
   const stopMonitoring = async () => {
-    await monitorRef.current?.stop();
-    monitorRef.current = null;
-    clearInterval(elapsedRef.current);
-    setIsRunning(false);
-    setCurrentLevel(-160);
-    setElapsed(0);
-    deactivateKeepAwake();
-    await stopForegroundService();
+    try {
+      await monitorRef.current?.stop();
+      monitorRef.current = null;
+      clearInterval(elapsedRef.current);
+      setIsRunning(false);
+      setCurrentLevel(-160);
+      setElapsed(0);
+      deactivateKeepAwake();
+      await stopForegroundService();
+    } catch (e) {
+      logger.error('MONITOR_STOP_ERROR', 'Failed to stop monitoring', { error: e.message });
+    }
   };
 
   const toggleMonitoring = async () => {
@@ -263,7 +307,7 @@ export default function MonitorScreen({ onNewEvent, maxRecordings, onMaxRecordin
                 styles.thresholdBtn,
                 threshold === val && styles.thresholdBtnActive,
               ]}
-              onPress={() => setThreshold(val)}
+              onPress={() => handleThresholdChange(val)}
               disabled={isRunning}
             >
               <Text style={[
@@ -327,12 +371,42 @@ export default function MonitorScreen({ onNewEvent, maxRecordings, onMaxRecordin
       )}
 
       {/* Debug log */}
-      {isRunning && debugLog.length > 0 && (
-        <View style={styles.debugBox}>
-          <Text style={styles.debugTitle}>DEBUG</Text>
-          {debugLog.map((msg, i) => (
-            <Text key={i} style={styles.debugText}>{msg}</Text>
-          ))}
+      {recentLogs.length > 0 && (
+        <View style={styles.logsSection}>
+          <TouchableOpacity
+            style={styles.logsHeader}
+            onPress={() => setShowLogs(!showLogs)}
+          >
+            <Text style={styles.logsTitle}>📋 Logs ({recentLogs.length})</Text>
+            <Text style={styles.logsToggle}>{showLogs ? '▼' : '▶'}</Text>
+          </TouchableOpacity>
+          
+          {showLogs && (
+            <ScrollView
+              style={styles.logsContent}
+              nestedScrollEnabled
+              scrollEnabled={true}
+            >
+              {recentLogs.map((log, i) => (
+                <View key={i} style={styles.logLine}>
+                  <Text style={[
+                    styles.logText,
+                    log.level === 'ERROR' && styles.logError,
+                    log.level === 'WARN' && styles.logWarn,
+                    log.level === 'INFO' && styles.logInfo,
+                  ]}>
+                    <Text style={styles.logTime}>
+                      {new Date(log.timestamp).toLocaleTimeString()}
+                    </Text>
+                    {' '}
+                    <Text style={styles.logType}>[{log.type}]</Text>
+                    {' '}
+                    {log.message}
+                  </Text>
+                </View>
+              ))}
+            </ScrollView>
+          )}
         </View>
       )}
 
@@ -546,25 +620,62 @@ const styles = StyleSheet.create({
     color: C.muted,
     lineHeight: 20,
   },
-  debugBox: {
-    marginTop: 12,
-    backgroundColor: '#1a1a0d',
-    borderRadius: 8,
-    padding: 10,
+  logsSection: {
+    marginTop: 16,
+    backgroundColor: C.surface,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#3a3a1a',
+    borderColor: C.border,
+    overflow: 'hidden',
   },
-  debugTitle: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: C.yellow,
-    marginBottom: 4,
-    letterSpacing: 1,
+  logsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: C.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
   },
-  debugText: {
-    fontSize: 10,
-    color: '#aaa',
+  logsTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: C.text,
+    letterSpacing: 0.5,
+  },
+  logsToggle: {
+    fontSize: 11,
+    color: C.muted,
+  },
+  logsContent: {
+    maxHeight: 200,
+    backgroundColor: '#040408',
+    padding: 8,
+  },
+  logLine: {
+    marginBottom: 6,
+  },
+  logText: {
+    fontSize: 11,
+    color: C.muted,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    lineHeight: 14,
+    lineHeight: 16,
+  },
+  logTime: {
+    color: '#666',
+    fontSize: 10,
+  },
+  logType: {
+    color: C.accent,
+    fontWeight: '600',
+  },
+  logInfo: {
+    color: C.success,
+  },
+  logWarn: {
+    color: C.yellow,
+  },
+  logError: {
+    color: C.danger,
   },
 });

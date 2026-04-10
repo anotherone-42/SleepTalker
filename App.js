@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -7,6 +7,7 @@ import { Text } from 'react-native';
 
 import MonitorScreen from './src/screens/MonitorScreen';
 import RecordingsScreen from './src/screens/RecordingsScreen';
+import logger from './src/services/Logger';
 
 const Tab = createBottomTabNavigator();
 
@@ -23,6 +24,17 @@ export default function App() {
   // Trigger pour forcer le refresh de RecordingsScreen quand un clip est sauvegardé
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [maxRecordings, setMaxRecordings] = useState(10);
+
+  // Initialiser le logger au démarrage
+  useEffect(() => {
+    const init = async () => {
+      if (!logger.initialized) {
+        await logger.init();
+        logger.info('SleepTalker app started', {});
+      }
+    };
+    init();
+  }, []);
 
   const handleNewEvent = useCallback(() => {
     setRefreshTrigger(t => t + 1);
