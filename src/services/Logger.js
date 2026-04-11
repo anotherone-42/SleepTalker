@@ -1,8 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system/legacy';
 
 const MAX_LOGS = 1000; // Garder les 1000 derniers logs
 const LOG_KEY = '@sleeptalker_logs';
 const ANALYTICS_KEY = '@sleeptalker_analytics';
+const LOG_DIR = FileSystem.documentDirectory + 'logs/';
+const MAX_LOG_FILES = 7; // Garder 7 jours de logs
 
 const LogLevel = {
   DEBUG: 'DEBUG',
@@ -57,7 +60,16 @@ class Logger {
     try {
       // Générer un ID de session unique
       this.sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      
+
+      // Créer le dossier logs s'il n'existe pas
+      const dirInfo = await FileSystem.getInfoAsync(LOG_DIR);
+      if (!dirInfo.exists) {
+        await FileSystem.makeDirectoryAsync(LOG_DIR, { intermediates: true });
+      }
+
+      // Nettoyer les vieux fichiers de log
+      await this._cleanOldLogFiles();
+
       // Charger les logs existants
       const stored = await AsyncStorage.getItem(LOG_KEY);
       if (stored) {
@@ -66,7 +78,7 @@ class Logger {
         this.logs = [];
       }
       this.initialized = true;
-      
+
       // Charger les analytics
       const analytics = await AsyncStorage.getItem(ANALYTICS_KEY);
       if (!analytics) {
@@ -78,7 +90,7 @@ class Logger {
           lastSessionDate: null,
         });
       }
-      
+
       this.info('Logger initialized', { sessionId: this.sessionId });
     } catch (e) {
       console.error('Logger init error:', e);
@@ -123,6 +135,7 @@ class Logger {
     
     // Persister asynchronement
     this._persist();
+    this._persistToFile(entry);
   }
 
   // ─── Méthodes raccourci ───────────────────────────────────────────────
@@ -345,6 +358,50 @@ class Logger {
       await AsyncStorage.setItem(LOG_KEY, JSON.stringify(this.logs));
     } catch (e) {
       console.error('Logger persist error:', e);
+    }
+  }
+
+  _getLogFileName() {
+    const d = new Date();
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return `sleeptalker_${date}.log`;
+  }
+
+  async _persistToFile(entry) {
+    try {
+      const filename = this._getLogFileName();
+      const filepath = LOG_DIR + filename;
+      const time = new Date(entry.timestamp).toLocaleTimeString('fr-FR');
+      let line = `[${time}] [${entry.level}] [${entry.type}] ${entry.message}`;
+      if (entry.data && Object.keys(entry.data).length > 0) {
+        line += ` | ${JSON.stringify(entry.data)}`;
+      }
+      line += '\n';
+
+      const info = await FileSystem.getInfoAsync(filepath);
+      if (info.exists) {
+        const existing = await FileSystem.readAsStringAsync(filepath);
+        await FileSystem.writeAsStringAsync(filepath, existing + line);
+      } else {
+        await FileSystem.writeAsStringAsync(filepath, line);
+      }
+    } catch (e) {
+      console.error('Logger file persist error:', e);
+    }
+  }
+
+  async _cleanOldLogFiles() {
+    try {
+      const files = await FileSystem.readDirectoryAsync(LOG_DIR);
+      const logFiles = files.filter(f => f.startsWith('sleeptalker_') && f.endsWith('.log')).sort();
+      if (logFiles.length > MAX_LOG_FILES) {
+        const toDelete = logFiles.slice(0, logFiles.length - MAX_LOG_FILES);
+        for (const file of toDelete) {
+          await FileSystem.deleteAsync(LOG_DIR + file, { idempotent: true });
+        }
+      }
+    } catch (e) {
+      console.error('Logger cleanup error:', e);
     }
   }
 

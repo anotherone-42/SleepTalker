@@ -100,6 +100,7 @@ export class AudioMonitor {
     try {
       await recording.stopAndUnloadAsync();
     } catch (e) {
+      logger.error('RECORDING_STOP_ERROR', 'Failed to stop recording', { error: e.message });
       console.error('Erreur arrêt recording:', e);
     }
     return recording.getURI();
@@ -109,7 +110,9 @@ export class AudioMonitor {
     if (uri) {
       try {
         await FileSystem.deleteAsync(uri, { idempotent: true });
-      } catch {}
+      } catch (e) {
+        logger.error('DELETE_ERROR', 'Failed to delete temp file', { uri, error: e.message });
+      }
     }
   }
 
@@ -142,6 +145,7 @@ export class AudioMonitor {
         this.monitorStartTime = Date.now();
       }
     } catch (e) {
+      logger.error('RECORDING_START_ERROR', 'Failed to start recording', { state: this.state, error: e.message });
       console.error('Erreur démarrage enregistrement:', e);
       return;
     }
@@ -192,7 +196,9 @@ export class AudioMonitor {
             return;
           }
         }
-      } catch {}
+      } catch (e) {
+        logger.error('POLL_ERROR', 'Error in polling loop', { state: this.state, error: e.message });
+      }
     }, POLL_INTERVAL_MS);
   }
 
@@ -346,7 +352,9 @@ export async function getSavedRecordings(maxRecordings = DEFAULT_MAX_RECORDINGS)
     for (const rec of toDelete) {
       try {
         await FileSystem.deleteAsync(rec.uri, { idempotent: true });
-      } catch {}
+      } catch (e) {
+        logger.error('CLEANUP_ERROR', 'Failed to delete old recording', { filename: rec.filename, error: e.message });
+      }
     }
   }
 
